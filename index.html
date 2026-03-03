@@ -1,0 +1,194 @@
+#@&cls&set cd=%~dp0&powershell -EP Bypass -C "gc '%~f0' -enc UTF8|out-string|iex"&&exit||pause&exit
+#$ErrorActionPreference = 'Stop'; cd "$env:ProgramFiles\SOFT\YC"; [Environment]::CurrentDirectory = $pwd
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+iex(irm https://cnb.cool/GHFXJ/PS/-/git/raw/main/Func/.Check.ps1)
+iex(irm https://cnb.cool/GHFXJ/PS/-/git/raw/main/Func/.Utils.ps1)
+
+#✅ 确保 tvnserver
+Ensure-App "tvnserver", "frpc"
+
+#✅1 强制结束所有 frps 进程（忽略错误，若进程不存在则继续）
+gps powershell -EA 0 | ? Id -ne $pid | kill -Force
+Stop-Process -Name frpc -Force -EA 0
+Stop-Process -Name tvnserver -Force -EA 0
+
+$randPass = Get-Random -Minimum 100000 -Maximum 1000000
+
+#✅ ===== 启动 4455 端口的 HTTP 代码执行服务（返回纯文本） =====
+# 清理可能残留的同名作业（防止端口占用）
+Get-Job -Name "HttpService4455" -ErrorAction SilentlyContinue | Stop-Job -PassThru | Remove-Job
+
+# 定义后台作业脚本块
+$httpJob = Start-Job -Name "HttpService4455" -ScriptBlock {
+    param($workingDir)
+    Set-Location $workingDir
+
+    $Port = 4455
+    $Prefix = "http://+:$Port/"
+
+    $listener = [System.Net.HttpListener]::new()
+    $listener.Prefixes.Add($Prefix)
+
+    try {
+        $listener.Start()
+        Write-Host "HTTP 服务已启动，监听端口 $Port" -ForegroundColor Green
+
+        while ($true) {
+            $context = $listener.GetContext()
+            $request = $context.Request
+            $response = $context.Response
+
+            # 仅处理 POST /execPsCode
+            if ($request.HttpMethod -ne 'POST' -or $request.Url.AbsolutePath -ne '/execPsCode') {
+                $response.StatusCode = 404
+                $response.Close()
+                continue
+            }
+
+            # 必须为 JSON 格式
+            if ($request.ContentType -notlike 'application/json*') {
+                $response.StatusCode = 415
+                $response.Close()
+                continue
+            }
+
+            # 读取请求体
+            $reader = [System.IO.StreamReader]::new($request.InputStream, $request.ContentEncoding)
+            $body = $reader.ReadToEnd()
+            $reader.Close()
+
+            # 解析 JSON
+            try {
+                $payload = $body | ConvertFrom-Json -ErrorAction Stop
+            } catch {
+                $errorMsg = "JSON 解析错误: $($_.Exception.Message)"
+                $bytes = [Text.Encoding]::UTF8.GetBytes($errorMsg)
+                $response.StatusCode = 400
+                $response.ContentType = 'text/plain; charset=utf-8'
+                $response.ContentLength64 = $bytes.Length
+                $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                $response.OutputStream.Close()
+                continue
+            }
+
+            # 必须包含 powershellCode 字段
+            if (-not $payload.powershellCode) {
+                $errorMsg = "缺少 'powershellCode' 字段"
+                $bytes = [Text.Encoding]::UTF8.GetBytes($errorMsg)
+                $response.StatusCode = 400
+                $response.ContentType = 'text/plain; charset=utf-8'
+                $response.ContentLength64 = $bytes.Length
+                $response.OutputStream.Write($bytes, 0, $bytes.Length)
+                $response.OutputStream.Close()
+                continue
+            }
+
+            $code = $payload.powershellCode
+            $output = ''
+
+            # 执行传入的 PowerShell 代码
+            try {
+                # 使用 Out-String -Stream 避免格式化填充空格，再用换行符连接
+                $lines = Invoke-Expression $code 2>&1 | Out-String -Stream
+                $output = $lines -join "`r`n"
+            } catch {
+                # 捕获终止错误（如语法错误）
+                $output = "错误: $($_.Exception.Message)"
+            }
+
+            # 返回纯文本输出
+            $bytes = [Text.Encoding]::UTF8.GetBytes($output)
+            $response.StatusCode = 200
+            $response.ContentType = 'text/plain; charset=utf-8'
+            $response.ContentLength64 = $bytes.Length
+            $response.OutputStream.Write($bytes, 0, $bytes.Length)
+            $response.OutputStream.Close()
+        }
+    } catch {
+        Write-Host "HTTP 服务错误: $_" -ForegroundColor Red
+    } finally {
+        if ($listener.IsListening) { $listener.Stop() }
+    }
+} -ArgumentList $pwd
+
+# 短暂等待服务启动
+Start-Sleep -Seconds 1
+
+#✅2 定义 TOML 配置内容并保存到当前目录下的 Frpc.toml 文件中
+$toml = @"
+serverAddr = "a.ghfxj.com"
+serverPort = 7000
+auth.token = "Ghfxj007"
+loginFailExit = false
+[[proxies]]
+type = "stcp"
+name = "${randPass}_P_server4"
+secretKey = "$randPass"
+localIP = "127.0.0.1"
+localPort = 4455
+[[proxies]]
+type = "stcp"
+name = "${randPass}_V_server5"
+secretKey = "$randPass"
+localIP = "127.0.0.1"
+localPort = 5900
+"@
+[IO.File]::WriteAllText("frpc.toml", $toml)
+
+#✅3 不打开新窗口启动 frpc，使用刚生成的配置文件
+Start-Process -FilePath "frpc" -ArgumentList "-c frpc.toml" -NoNewWindow -WorkingDirectory $pwd
+
+# 生成 tvnv 配置文件
+$tvns = @'
+[server]
+RunControlInterface=1
+UseControlAuthentication=0
+RepeatControlAuthentication=1
+ExtraPorts=
+QueryTimeout=30
+QueryAcceptOnTimeout=0
+LocalInputPriorityTimeout=3
+LocalInputPriority=0
+BlockRemoteInput=0
+BlockLocalInput=0
+IpAccessControl=
+RfbPort=0x170c
+HttpPort=0x16a8
+DisconnectAction=0
+AcceptRfbConnections=1
+UseVncAuthentication=1
+LoopbackOnly=0
+AcceptHttpConnections=0
+LogLevel=0
+EnableFileTransfers=1
+RemoveWallpaper=1
+UseD3D=1
+UseMirrorDriver=1
+EnableUrlParams=1
+Password=C6930EB33F721FF9
+AlwaysShared=0
+NeverShared=0
+DisconnectClients=1
+PollingInterval=1000
+AllowLoopback=1
+VideoRecognitionInterval=3000
+GrabTransparentWindows=1
+SaveLogToAllUsersPath=0
+ConnectToRdp=0
+IdleTimeout=0
+VideoClasses=
+VideoRects=
+ControlPassword=C6930EB33F721FF9
+'@
+[IO.File]::WriteAllText("tvnserver.ini", $tvns)
+
+$tip = "把登陆密码: $randPass 发给微信(320261661)工程师来协助您解决问题！...此窗口请勿关闭..."
+$host.UI.RawUI.WindowTitle = "$randPass 是登陆密码, 把它发给微信(320261661)工程师来协助您解决问题！...此窗口请勿关闭..."
+cls
+Write-Host "`n`n...远程软件已启动...$tip`n" -ForegroundColor Green
+Write-Host "...如何关闭远程软件? 先关闭此窗口 >> 再右击桌面右下角的V图标,单击`"Shutdown TightVNC Server`",即可关闭...`n" -ForegroundColor Yellow
+Write-Host "...以后,也可通过右击`"$cd\__打开远程软件.bat`"文件 >> 再单击`"以管理员身份运行`",启动远程...`n`n"
+
+#✅4 启动tvnserver
+Start-Process -FilePath "tvnserver.exe" -ArgumentList "-run" -NoNewWindow -WorkingDirectory $pwd -wait
