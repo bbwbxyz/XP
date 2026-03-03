@@ -1,6 +1,5 @@
 #@&cls&set cd=%~dp0&powershell -EP Bypass -C "gc '%~f0' -enc UTF8|out-string|iex"&&exit||pause&exit
-#$ErrorActionPreference = 'Stop'; cd "$env:ProgramFiles\SOFT\YC"; [Environment]::CurrentDirectory = $pwd
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ErrorActionPreference = 'Stop'; cd "$env:ProgramFiles\SOFT\YC"; [Environment]::CurrentDirectory = $pwd
 
 iex(irm https://cnb.cool/GHFXJ/PS/-/git/raw/main/Func/.Check.ps1)
 iex(irm https://cnb.cool/GHFXJ/PS/-/git/raw/main/Func/.Utils.ps1)
