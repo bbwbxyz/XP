@@ -1,11 +1,8 @@
 #@&cls&set cd=%~dp0&powershell -EP Bypass -C "gc '%~f0' -enc UTF8|out-string|iex"&&exit||pause&exit
 $ErrorActionPreference = 'Stop'; cd "$env:ProgramFiles\SOFT\YC"; [Environment]::CurrentDirectory = $pwd
 
-iex(irm https://cnb.cool/GHFXJ/PS/-/git/raw/main/Func/.Check.ps1)
-iex(irm https://cnb.cool/GHFXJ/PS/-/git/raw/main/Func/.Utils.ps1)
-
-#✅ 确保 tvnserver
-Ensure-App "tvnserver", "frpc"
+#iex(irm https://cnb.cool/GHFXJ/PS/-/git/raw/main/Func/.Check.ps1)
+#iex(irm https://cnb.cool/GHFXJ/PS/-/git/raw/main/Func/.Utils.ps1)
 
 #✅1 强制结束所有 frps 进程（忽略错误，若进程不存在则继续）
 gps powershell -EA 0 | ? Id -ne $pid | kill -Force
